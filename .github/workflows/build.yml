@@ -69,8 +69,10 @@ jobs:
 
       - name: Install prerequisites
         # cargo-c for rav1e; meson for harfbuzz/dav1d/libvmaf (the build
-        # script only uses a python virtualenv for meson if none is native)
-        run: brew install cargo-c meson
+        # script only uses a python virtualenv for meson if none is native);
+        # autotools for libklvanc and other autogen.sh-based libraries,
+        # which recent macOS runner images no longer ship
+        run: brew install cargo-c meson autoconf automake libtool
 
       - name: Fetch build script
         run: git clone --depth 1 --branch main https://git.martin-riedl.de/ffmpeg/build-script.git "$RUNNER_TEMP/build-script"
