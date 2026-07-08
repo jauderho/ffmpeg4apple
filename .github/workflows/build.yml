@@ -99,6 +99,13 @@ jobs:
           sed -i '' 's|-DBUILD_SHARED_LIBS=OFF ../openjpeg-|-DBUILD_SHARED_LIBS=OFF -DBUILD_CODEC:BOOL=OFF ../openjpeg-|' "$OJP"
           grep -q 'BUILD_CODEC' "$OJP"
 
+          # libvorbis 1.3.7's configure passes -force_cpusubtype_ALL, which
+          # Xcode 15+ ld rejects; strip it before configure runs (same fix
+          # Homebrew applies)
+          LV="$RUNNER_TEMP/build-script/script/build-libvorbis.sh"
+          sed -i '' 's|^\./configure |sed -i.orig "s/-force_cpusubtype_ALL//g" configure \&\& ./configure |' "$LV"
+          grep -q 'force_cpusubtype_ALL' "$LV"
+
       - name: Build
         env:
           FFMPEG_TARBALL: ${{ runner.temp }}/ffmpeg.tar.bz2
