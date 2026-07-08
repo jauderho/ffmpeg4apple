@@ -38,6 +38,10 @@ jobs:
             echo "::error::only n8.1 and above are built"
             exit 1
           fi
+          if [[ -z "$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$TAG" --jq '.[] | select(.ref == "refs/tags/'"$TAG"'")')" ]]; then
+            echo "::error::tag '$TAG' does not exist in this repository yet; run the 'Sync upstream' workflow first"
+            exit 1
+          fi
           if gh release view "${TAG#n}" --repo "$GITHUB_REPOSITORY" --json tagName > /dev/null 2>&1; then
             echo "release ${TAG#n} already exists; nothing to do"
             echo "proceed=false" >> "$GITHUB_OUTPUT"
@@ -95,6 +99,10 @@ jobs:
       - name: Print logs on failure
         if: failure()
         run: |
+          if [ ! -d "$RUNNER_TEMP/compile/log" ]; then
+            echo "no build logs (failure happened before the build started)"
+            exit 0
+          fi
           for f in "$RUNNER_TEMP"/compile/log/*.log; do
             echo "::group::$(basename "$f")"
             tail -n 100 "$f"

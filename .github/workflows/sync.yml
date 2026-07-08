@@ -16,6 +16,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       GH_TOKEN: ${{ github.token }}
       UPSTREAM: https://github.com/FFmpeg/FFmpeg.git
@@ -29,7 +30,20 @@ jobs:
       - name: Fetch upstream branch and release tags
         run: |
           git remote add upstream "$UPSTREAM"
-          git fetch upstream "+refs/heads/master:refs/remotes/upstream/master" "+refs/tags/n*:refs/tags/n*"
+          git fetch upstream "+refs/heads/master:refs/remotes/upstream/master"
+          # fetch only tags >= n8.1: a blanket n* refspec would pull the full
+          # history of every release branch back to n0.5 (multiple GB)
+          MIN=80100
+          REFSPECS=()
+          while read -r TAG; do
+            [[ "$TAG" =~ ^n([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]] || continue
+            NUM=$(( ${BASH_REMATCH[1]} * 10000 + ${BASH_REMATCH[2]} * 100 + ${BASH_REMATCH[4]:-0} ))
+            (( NUM >= MIN )) || continue
+            REFSPECS+=("+refs/tags/$TAG:refs/tags/$TAG")
+          done < <(git ls-remote --tags upstream 'n*' | grep -v '\^{}' | sed 's|.*refs/tags/||')
+          if (( ${#REFSPECS[@]} > 0 )); then
+            git fetch upstream "${REFSPECS[@]}"
+          fi
 
       - name: Merge upstream master
         run: |
