@@ -68,7 +68,9 @@ jobs:
           fetch-depth: 1
 
       - name: Install prerequisites
-        run: brew install cargo-c
+        # cargo-c for rav1e; meson for harfbuzz/dav1d/libvmaf (the build
+        # script only uses a python virtualenv for meson if none is native)
+        run: brew install cargo-c meson
 
       - name: Fetch build script
         run: git clone --depth 1 --branch main https://git.martin-riedl.de/ffmpeg/build-script.git "$RUNNER_TEMP/build-script"
