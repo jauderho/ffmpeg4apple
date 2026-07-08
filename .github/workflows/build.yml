@@ -108,13 +108,14 @@ jobs:
 
           # libbluray's internal dec_init collides with the same symbol in
           # ffmpeg's fftools when linking statically; merge the archive and
-          # export only the public bd_* API, hiding all internals
+          # demote the clashing symbol to a private extern (an export-only
+          # allowlist would fail on symbols already hidden at compile time)
           LB="$RUNNER_TEMP/build-script/script/build-libbluray.sh"
           cat >> "$LB" <<'PATCH'
 
           cd "$TOOL_DIR/lib"
           checkStatus $? "change directory failed"
-          cc -nostdlib -r -Wl,-all_load,libbluray.a -Wl,-exported_symbol,'_bd_*' -o libbluray-merged.o
+          cc -nostdlib -r -Wl,-all_load,libbluray.a -Wl,-unexported_symbol,_dec_init -o libbluray-merged.o
           checkStatus $? "libbluray symbol hiding failed"
           rm libbluray.a
           ar rcs libbluray.a libbluray-merged.o
