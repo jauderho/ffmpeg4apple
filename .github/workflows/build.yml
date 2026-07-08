@@ -106,6 +106,23 @@ jobs:
           sed -i '' 's|^\./configure |sed -i.orig "s/-force_cpusubtype_ALL//g" configure \&\& ./configure |' "$LV"
           grep -q 'force_cpusubtype_ALL' "$LV"
 
+          # libbluray's internal dec_init collides with the same symbol in
+          # ffmpeg's fftools when linking statically; merge the archive and
+          # export only the public bd_* API, hiding all internals
+          LB="$RUNNER_TEMP/build-script/script/build-libbluray.sh"
+          cat >> "$LB" <<'PATCH'
+
+          cd "$TOOL_DIR/lib"
+          checkStatus $? "change directory failed"
+          cc -nostdlib -r -Wl,-all_load,libbluray.a -Wl,-exported_symbol,'_bd_*' -o libbluray-merged.o
+          checkStatus $? "libbluray symbol hiding failed"
+          rm libbluray.a
+          ar rcs libbluray.a libbluray-merged.o
+          checkStatus $? "libbluray repack failed"
+          rm libbluray-merged.o
+          PATCH
+          tail -n 3 "$LB" | grep -q 'libbluray-merged'
+
       - name: Build
         env:
           FFMPEG_TARBALL: ${{ runner.temp }}/ffmpeg.tar.bz2
