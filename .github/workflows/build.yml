@@ -93,6 +93,12 @@ jobs:
           grep -q 'FFMPEG_TARBALL' "$SCRIPT"
           sed -i '' "s|EXTRA_VERSION=\".*\"|EXTRA_VERSION=\"$GITHUB_REPOSITORY\"|" "$SCRIPT"
 
+          # skip openJPEG's CLI tools: their link breaks when cmake picks up
+          # the runner image's Homebrew lcms2 headers; ffmpeg only needs the lib
+          OJP="$RUNNER_TEMP/build-script/script/build-openjpeg.sh"
+          sed -i '' 's|-DBUILD_SHARED_LIBS=OFF ../openjpeg-|-DBUILD_SHARED_LIBS=OFF -DBUILD_CODEC:BOOL=OFF ../openjpeg-|' "$OJP"
+          grep -q 'BUILD_CODEC' "$OJP"
+
       - name: Build
         env:
           FFMPEG_TARBALL: ${{ runner.temp }}/ffmpeg.tar.bz2
