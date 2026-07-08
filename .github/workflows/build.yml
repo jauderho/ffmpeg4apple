@@ -38,8 +38,8 @@ jobs:
             echo "::error::only n8.1 and above are built"
             exit 1
           fi
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName > /dev/null 2>&1; then
-            echo "release $TAG already exists; nothing to do"
+          if gh release view "${TAG#n}" --repo "$GITHUB_REPOSITORY" --json tagName > /dev/null 2>&1; then
+            echo "release ${TAG#n} already exists; nothing to do"
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           else
             echo "proceed=true" >> "$GITHUB_OUTPUT"
@@ -119,7 +119,7 @@ jobs:
             cp "$BIN/$b" "$RUNNER_TEMP/dist/$b-$VERSION-macos-arm64"
           done
           cd "$RUNNER_TEMP/dist"
-          tar -cJf "ffmpeg-$VERSION-macos-arm64.tar.xz" ./*-macos-arm64
+          tar -czf "ffmpeg-$VERSION-macos-arm64.tar.gz" ./*-macos-arm64
           shasum -a 256 ./* > SHA256SUMS.txt
 
       - name: Create release
@@ -134,7 +134,10 @@ jobs:
             echo "chmod +x ffmpeg-$VERSION-macos-arm64"
             echo '```'
           } > "$RUNNER_TEMP/notes.md"
-          gh release create "$TAG" \
+          # release is tagged X.Y.Z (no n prefix); that tag doesn't exist yet,
+          # so pin it to the commit of the source tag we built
+          gh release create "$VERSION" \
+            --target "$(git rev-parse HEAD)" \
             --title "FFmpeg $VERSION (macOS Apple Silicon)" \
             --notes-file "$RUNNER_TEMP/notes.md" \
             "$RUNNER_TEMP"/dist/*

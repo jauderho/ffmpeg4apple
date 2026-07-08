@@ -28,9 +28,9 @@ dispatches builds explicitly instead.
    official release tarballs) instead of downloading from ffmpeg.org.
 3. Runs the full static build (x264, x265 multibit, aom, svt-av1, rav1e, dav1d, vvenc,
    vpx, opus, lame, srt, libass, vmaf, ...) including the script's post-build tests.
-4. Publishes a GitHub release on the tag with `ffmpeg-X.Y.Z-macos-arm64`,
-   `ffprobe-...`, `ffplay-...`, a `.tar.xz` bundle (preserves the executable bit) and
-   `SHA256SUMS.txt`.
+4. Publishes a GitHub release tagged `X.Y.Z` (no `n` prefix, pinned to the source
+   tag's commit) with `ffmpeg-X.Y.Z-macos-arm64`, `ffprobe-...`, `ffplay-...`, a
+   `.tar.gz` bundle (preserves the executable bit) and `SHA256SUMS.txt`.
 
 Only prerequisite installed on the runner is `cargo-c` (for rav1e); the build script
 compiles its own cmake/nasm/ninja/pkg-config and all libraries statically.
@@ -40,6 +40,6 @@ compiles its own cmake/nasm/ninja/pkg-config and all libraries statically.
 - A full build takes a few hours on the hosted runner; job timeout is 6 h.
 - If this repo was created with GitHub's fork button, enable workflows once in the
   Actions tab (scheduled workflows are off by default on forks).
-- Releases are keyed by tag: to rebuild one, delete its release and re-run
-  `Build` (or wait for the next sync).
+- Releases are keyed by version: to rebuild one, delete its release (and the `X.Y.Z`
+  tag it created) and re-run `Build` (or wait for the next sync).
 - Building a specific tag manually: Actions → Build → Run workflow → enter e.g. `n8.1.2`.

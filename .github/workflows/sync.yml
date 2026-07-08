@@ -54,7 +54,7 @@ jobs:
             [[ "$TAG" =~ ^n([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]] || continue
             NUM=$(( ${BASH_REMATCH[1]} * 10000 + ${BASH_REMATCH[2]} * 100 + ${BASH_REMATCH[4]:-0} ))
             (( NUM >= MIN )) || continue
-            if gh release view "$TAG" --json tagName > /dev/null 2>&1; then
+            if gh release view "${TAG#n}" --json tagName > /dev/null 2>&1; then
               continue
             fi
             if grep -qxF "Build $TAG" <<< "$ACTIVE"; then
