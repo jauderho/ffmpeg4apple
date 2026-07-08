@@ -54,10 +54,8 @@ jobs:
             echo "::warning::merge with upstream/master conflicted; master not updated (tags still synced)"
           fi
 
-      - name: Push master and tags
-        run: |
-          git push origin HEAD:master
-          git push origin --tags
+      - name: Push tags
+        run: git push origin --tags
 
       - name: Dispatch builds for unreleased tags (n8.1 and above)
         run: |
@@ -78,3 +76,11 @@ jobs:
             echo "dispatching build for $TAG"
             gh workflow run build.yml --ref "$GITHUB_REF_NAME" -f tag="$TAG"
           done
+
+      - name: Push master
+        run: |
+          # master may have moved while this job ran (e.g. PR merges);
+          # integrate it so the push is a fast-forward
+          git fetch origin master
+          git merge --no-edit origin/master
+          git push origin HEAD:master
