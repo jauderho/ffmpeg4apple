@@ -19,6 +19,9 @@ jobs:
     timeout-minutes: 30
     env:
       GH_TOKEN: ${{ github.token }}
+      # pin gh to this repo: it would otherwise resolve the git remote
+      # named "upstream" (FFmpeg/FFmpeg) added below
+      GH_REPO: ${{ github.repository }}
       UPSTREAM: https://github.com/FFmpeg/FFmpeg.git
     steps:
       - name: Check out master
