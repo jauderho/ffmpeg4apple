@@ -1,0 +1,66 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM: https://github.com/FFmpeg/FFmpeg.git
+    steps:
+      - name: Check out master
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Fetch upstream branch and release tags
+        run: |
+          git remote add upstream "$UPSTREAM"
+          git fetch upstream "+refs/heads/master:refs/remotes/upstream/master" "+refs/tags/n*:refs/tags/n*"
+
+      - name: Merge upstream master
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git merge --no-edit upstream/master; then
+            git merge --abort
+            echo "::warning::merge with upstream/master conflicted; master not updated (tags still synced)"
+          fi
+
+      - name: Push master and tags
+        run: |
+          git push origin HEAD:master
+          git push origin --tags
+
+      - name: Dispatch builds for unreleased tags (n8.1 and above)
+        run: |
+          MIN=80100  # n8.1.0
+          ACTIVE=$(gh run list --workflow build.yml --limit 100 --json displayTitle,status \
+            --jq '.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting") | .displayTitle')
+          for TAG in $(git tag --list 'n*' | sort -V); do
+            [[ "$TAG" =~ ^n([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]] || continue
+            NUM=$(( ${BASH_REMATCH[1]} * 10000 + ${BASH_REMATCH[2]} * 100 + ${BASH_REMATCH[4]:-0} ))
+            (( NUM >= MIN )) || continue
+            if gh release view "$TAG" --json tagName > /dev/null 2>&1; then
+              continue
+            fi
+            if grep -qxF "Build $TAG" <<< "$ACTIVE"; then
+              echo "build for $TAG already queued or running"
+              continue
+            fi
+            echo "dispatching build for $TAG"
+            gh workflow run build.yml --ref "$GITHUB_REF_NAME" -f tag="$TAG"
+          done

@@ -1,0 +1,140 @@
+name: Build
+run-name: "Build ${{ inputs.tag }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "FFmpeg release tag to build (nX.Y[.Z], n8.1 or newer)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+      version: ${{ steps.check.outputs.version }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Validate tag and check for existing release
+        id: check
+        run: |
+          if [[ ! "$TAG" =~ ^n([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]]; then
+            echo "::error::'$TAG' is not a release tag (expected nX.Y[.Z])"
+            exit 1
+          fi
+          NUM=$(( ${BASH_REMATCH[1]} * 10000 + ${BASH_REMATCH[2]} * 100 + ${BASH_REMATCH[4]:-0} ))
+          if (( NUM < 80100 )); then
+            echo "::error::only n8.1 and above are built"
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName > /dev/null 2>&1; then
+            echo "release $TAG already exists; nothing to do"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=${TAG#n}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.proceed == 'true'
+    runs-on: macos-26
+    timeout-minutes: 360
+    env:
+      TAG: ${{ inputs.tag }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out FFmpeg source at tag
+        uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 1
+
+      - name: Install prerequisites
+        run: brew install cargo-c
+
+      - name: Fetch build script
+        run: git clone --depth 1 --branch main https://git.martin-riedl.de/ffmpeg/build-script.git "$RUNNER_TEMP/build-script"
+
+      - name: Point build script at this checkout
+        run: |
+          # build-ffmpeg.sh normally downloads a release tarball from ffmpeg.org;
+          # feed it an identical-shaped tarball generated from this repository instead
+          git archive --prefix=ffmpeg/ HEAD > "$RUNNER_TEMP/ffmpeg.tar"
+          # official tarballs carry a VERSION file that ffbuild/version.sh reads
+          mkdir -p "$RUNNER_TEMP/stage/ffmpeg"
+          echo "$VERSION" > "$RUNNER_TEMP/stage/ffmpeg/VERSION"
+          tar -rf "$RUNNER_TEMP/ffmpeg.tar" -C "$RUNNER_TEMP/stage" ffmpeg/VERSION
+          bzip2 "$RUNNER_TEMP/ffmpeg.tar"
+
+          SCRIPT="$RUNNER_TEMP/build-script/script/build-ffmpeg.sh"
+          sed -i '' 's|download https://ffmpeg.org/releases/.* "ffmpeg.tar.bz2"|cp "$FFMPEG_TARBALL" "ffmpeg.tar.bz2"|' "$SCRIPT"
+          grep -q 'FFMPEG_TARBALL' "$SCRIPT"
+          sed -i '' "s|EXTRA_VERSION=\".*\"|EXTRA_VERSION=\"$GITHUB_REPOSITORY\"|" "$SCRIPT"
+
+      - name: Build
+        env:
+          FFMPEG_TARBALL: ${{ runner.temp }}/ffmpeg.tar.bz2
+        run: |
+          mkdir "$RUNNER_TEMP/compile"
+          cd "$RUNNER_TEMP/compile"
+          "$RUNNER_TEMP/build-script/build.sh" -SKIP_BUNDLE=YES
+
+      - name: Print logs on failure
+        if: failure()
+        run: |
+          for f in "$RUNNER_TEMP"/compile/log/*.log; do
+            echo "::group::$(basename "$f")"
+            tail -n 100 "$f"
+            echo "::endgroup::"
+          done
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ inputs.tag }}
+          path: ${{ runner.temp }}/compile/log/
+
+      - name: Verify and stage binaries
+        run: |
+          BIN="$RUNNER_TEMP/compile/out/bin"
+          "$BIN/ffmpeg" -version
+          "$BIN/ffprobe" -version
+          "$BIN/ffplay" -version
+          mkdir "$RUNNER_TEMP/dist"
+          for b in ffmpeg ffprobe ffplay; do
+            cp "$BIN/$b" "$RUNNER_TEMP/dist/$b-$VERSION-macos-arm64"
+          done
+          cd "$RUNNER_TEMP/dist"
+          tar -cJf "ffmpeg-$VERSION-macos-arm64.tar.xz" ./*-macos-arm64
+          shasum -a 256 ./* > SHA256SUMS.txt
+
+      - name: Create release
+        run: |
+          {
+            echo "Static FFmpeg, FFprobe and FFplay binaries for macOS on Apple Silicon (arm64),"
+            echo "built from tag \`$TAG\` with [martin-riedl.de build-script](https://git.martin-riedl.de/ffmpeg/build-script)."
+            echo
+            echo "The binaries are not code-signed; after downloading run:"
+            echo '```'
+            echo "xattr -d com.apple.quarantine ffmpeg-$VERSION-macos-arm64"
+            echo "chmod +x ffmpeg-$VERSION-macos-arm64"
+            echo '```'
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" \
+            --title "FFmpeg $VERSION (macOS Apple Silicon)" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            "$RUNNER_TEMP"/dist/*
