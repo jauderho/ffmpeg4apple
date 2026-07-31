@@ -240,7 +240,7 @@ cglobal pred16x16_tm_vp8_8, 2, 4, 5, dst, stride, stride3, iteration
 ;-----------------------------------------------------------------------------
 
 %macro H264_PRED16x16_PLANE 1
-cglobal pred16x16_plane_%1_8, 2,9,7
+cglobal pred16x16_plane_%1_8, 2,9,5
     mov          r2, r1           ; +stride
     neg          r1               ; -stride
 
@@ -448,7 +448,7 @@ H264_PRED16x16_PLANE svq3
 ;-----------------------------------------------------------------------------
 
 %macro H264_PRED8x8_PLANE 0
-cglobal pred8x8_plane_8, 2,9,7
+cglobal pred8x8_plane_8, 2,9,5
     mov          r2, r1           ; +stride
     neg          r1               ; -stride
 
@@ -848,8 +848,8 @@ cglobal pred8x8l_top_dc_8, 4,4,6
     psadbw   m4, m3
     paddw    m4, [pw_4]
     psrlw    m4, 3
-    SPLATW   m4, m4, 0
-    packuswb m4, m4
+    punpcklbw m4, m4
+    pshuflw  m4, m4, 0
 %rep 3
     movq [r0+r3*1], m4
     movq [r0+r3*2], m4
@@ -940,9 +940,8 @@ cglobal pred8x8l_dc_8, 4,5,6
     paddw        m3, m2
     lea          r4, [r2+r3*2]
     psrlw        m3, 4
+    punpcklbw    m3, m3
     pshuflw      m3, m3, 0
-    punpcklqdq   m3, m3
-    packuswb     m3, m3
     movq  [r0+r3*1], m3
     movq  [r0+r3*2], m3
     movq  [r1+r3*1], m3
@@ -1699,24 +1698,24 @@ cglobal pred4x4_tm_vp8_8, 3,6,4
     RET
 
 INIT_XMM ssse3
-cglobal pred4x4_tm_vp8_8, 3,3,8
+cglobal pred4x4_tm_vp8_8, 3,3,6
     sub         r0, r2
-    movq        m6, [tm_shuf]
-    pxor        m1, m1
+    movq        m1, [tm_shuf]
     movd        m0, [r0]
-    punpcklbw   m0, m1
-    movd        m7, [r0-4]
-    pshufb      m7, m6
+    movd        m5, [r0-4]
     lea         r1, [r0+r2*2]
+    pxor        m4, m4
+    punpcklbw   m0, m4
+    pshufb      m5, m1
     movd        m2, [r0+r2*1-4]
     movd        m3, [r0+r2*2-4]
     movd        m4, [r1+r2*1-4]
+    psubw       m0, m5
     movd        m5, [r1+r2*2-4]
-    pshufb      m2, m6
-    pshufb      m3, m6
-    pshufb      m4, m6
-    pshufb      m5, m6
-    psubw       m0, m7
+    pshufb      m2, m1
+    pshufb      m3, m1
+    pshufb      m4, m1
+    pshufb      m5, m1
     paddw       m2, m0
     paddw       m3, m0
     paddw       m4, m0
