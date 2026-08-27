@@ -1,4 +1,8 @@
 name: Build
+# Keep this exactly "Build <tag>": sync.yml matches the run title with
+# grep -qxF to avoid dispatching a second build for a tag already in flight,
+# so anything appended here would silently defeat that guard. The cpu baseline
+# is recorded in the job log and in the release notes instead.
 run-name: "Build ${{ inputs.tag }}"
 
 on:
@@ -8,6 +12,16 @@ on:
         description: "FFmpeg release tag to build (nX.Y[.Z], n8.1 or newer)"
         required: true
         type: string
+      cpu_baseline:
+        description: "Oldest Mac the binaries must run on"
+        required: false
+        type: choice
+        default: apple-m1
+        options:
+          - apple-m1
+          - apple-m2
+          - apple-m3
+          - apple-m4
 
 permissions:
   contents: write
@@ -60,6 +74,20 @@ jobs:
       VERSION: ${{ needs.preflight.outputs.version }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      # clang already defaults the deployment target to the host OS, so these
+      # binaries were macOS 26 only regardless; pinning it makes that explicit,
+      # applies the same target to every dependency rather than just ffmpeg,
+      # and stops a future runner image bumping the minimum OS by surprise.
+      # All the __builtin_available(macOS 10.x/11/12) guards in the
+      # VideoToolbox code fold away at compile time at this target.
+      MACOSX_DEPLOYMENT_TARGET: "26.0"
+      # Oldest Mac the release must run on. apple-m1 is also clang's own
+      # default here, so the shipped code is unchanged from an unset baseline;
+      # raising it (workflow_dispatch input, or change the default above) buys
+      # a newer instruction set at the cost of the older Macs. Every arm64 SIMD
+      # kernel in ffmpeg and in the encoders is picked at *run* time regardless,
+      # so a newer baseline only affects plain C -- measured at roughly nothing.
+      CPU_BASELINE: ${{ inputs.cpu_baseline }}
     steps:
       - name: Check out FFmpeg source at tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -74,8 +102,75 @@ jobs:
         # which recent macOS runner images no longer ship
         run: brew install cargo-c meson autoconf automake libtool
 
+      - name: Check the runner can execute the target baseline
+        # Everything downstream runs the binaries it just built -- the build
+        # script's own test suite, checkasm, `ffmpeg -version` -- so a runner
+        # older than CPU_BASELINE makes all of them die with SIGILL somewhere
+        # deep inside the build, for no obvious reason. Fail here, with the
+        # reason, before spending an hour on it.
+        #
+        # Rather than hardcode which Mac has what, ask clang which extensions
+        # this baseline turns on and check each against the runner. That stays
+        # correct if the baseline list grows.
+        run: |
+          echo "target baseline: $CPU_BASELINE"
+          echo "runner CPU:      $(sysctl -n machdep.cpu.brand_string)"
+          MACROS=$(clang -mcpu="$CPU_BASELINE" -dM -E -x c /dev/null) || {
+            echo "::error::clang rejected -mcpu=$CPU_BASELINE"; exit 1; }
+
+          MISSING=""
+          for pair in DOTPROD:FEAT_DotProd MATMUL_INT8:FEAT_I8MM BF16:FEAT_BF16 SME:FEAT_SME; do
+            macro="__ARM_FEATURE_${pair%%:*}"
+            feat="hw.optional.arm.${pair##*:}"
+            grep -q "define $macro " <<< "$MACROS" || continue
+            have=$(sysctl -n "$feat" 2>/dev/null || echo 0)
+            echo "  requires ${pair##*:}: runner has $have"
+            [ "$have" = "1" ] || MISSING="$MISSING ${pair##*:}"
+          done
+
+          if [ -n "$MISSING" ]; then
+            echo "::error::This runner is older than the requested baseline"
+            echo "::error::($CPU_BASELINE); it lacks:$MISSING. It cannot run, test or"
+            echo "::error::verify its own output. Either use a newer runner image, or"
+            echo "::error::re-run this workflow with a lower cpu_baseline."
+            exit 1
+          fi
+
+      - name: Select a full Xcode toolchain
+        # The Metal shader compiler only ships with Xcode, not with the
+        # CommandLineTools. ffmpeg autodetects it, so on a CommandLineTools-only
+        # image the Metal filters (yadif_videotoolbox) would be dropped silently
+        # and the release would be quietly less capable than the Macs it runs
+        # on. Pick a real Xcode and fail loudly if there is none.
+        run: |
+          if ! xcrun -f metal > /dev/null 2>&1; then
+            for dev in /Applications/Xcode*.app/Contents/Developer; do
+              [ -d "$dev" ] || continue
+              sudo xcode-select -s "$dev"
+              xcrun -f metal > /dev/null 2>&1 && break
+            done
+          fi
+          xcrun -f metal || {
+            echo "::error::no Metal compiler on this runner; the Metal-backed"
+            echo "::error::VideoToolbox filters cannot be built"
+            exit 1
+          }
+          echo "developer dir: $(xcode-select -p)"
+          xcrun metal --version 2>&1 | head -2 || true
+
       - name: Fetch build script
-        run: git clone --depth 1 --branch main https://git.martin-riedl.de/ffmpeg/build-script.git "$RUNNER_TEMP/build-script"
+        run: |
+          git clone --depth 1 --branch main https://git.martin-riedl.de/ffmpeg/build-script.git "$RUNNER_TEMP/build-script"
+          # the clone tracks main rather than a pinned commit, so record what
+          # was actually used: without this a release cannot be traced back to
+          # the dependency set it was built from
+          REV=$(git -C "$RUNNER_TEMP/build-script" rev-parse HEAD)
+          echo "BUILD_SCRIPT_REV=$REV" >> "$GITHUB_ENV"
+          ( cd "$RUNNER_TEMP/build-script/version" && \
+            for f in *; do printf '%-12s %s\n' "$f" "$(cat "$f")"; done ) \
+            > "$RUNNER_TEMP/build-script-versions.txt"
+          echo "build-script $REV"
+          cat "$RUNNER_TEMP/build-script-versions.txt"
 
       - name: Point build script at this checkout
         run: |
@@ -124,13 +219,132 @@ jobs:
           PATCH
           tail -n 3 "$LB" | grep -q 'libbluray-merged'
 
+      - name: Tune build script for an optimized release build
+        run: |
+          SCRIPT_DIR="$RUNNER_TEMP/build-script/script"
+
+          # Take the ffmpeg configure flags from the environment so they live in
+          # this workflow rather than inside a sed expression. Anchored on the
+          # command itself: the same string appears in the comment above it.
+          sed -i '' 's|^\./configure --prefix="$OUT_DIR" --pkg-config-flags="--static"|./configure --prefix="$OUT_DIR" --pkg-config-flags="--static" $FFMPEG_EXTRA_CONFIGURE|' "$SCRIPT_DIR/build-ffmpeg.sh"
+          grep -q '^\./configure .*\$FFMPEG_EXTRA_CONFIGURE' "$SCRIPT_DIR/build-ffmpeg.sh"
+
+          # x265 picks its AArch64 SIMD either at run time or, failing that, by
+          # probing the CPU it is being *built* on. The default is run-time
+          # detection, but pin it: if it ever fell back to compile-time probing,
+          # a runner without DotProd/I8MM would silently strip those kernels out
+          # of a binary destined for Macs that do have them.
+          sed -i '' 's|cmake -DCMAKE_INSTALL_PREFIX:PATH=$TOOL_DIR -DENABLE_SHARED=NO|cmake -DAARCH64_RUNTIME_CPU_DETECT=ON -DCMAKE_INSTALL_PREFIX:PATH=$TOOL_DIR -DENABLE_SHARED=NO|g' "$SCRIPT_DIR/build-x265.sh"
+          [ "$(grep -c 'AARCH64_RUNTIME_CPU_DETECT=ON' "$SCRIPT_DIR/build-x265.sh")" -eq 4 ]
+
+          # pkg-config is the one dependency built with a bare "make"; every
+          # other one already passes -j. It bundles glib, so this is minutes.
+          sed -i '' 's|^make$|make -j"$(sysctl -n hw.ncpu)"|' "$SCRIPT_DIR/build-pkg-config.sh"
+          grep -q 'make -j' "$SCRIPT_DIR/build-pkg-config.sh"
+
+          # snappy's CMakeLists is the only cmake dependency here that sets no
+          # default CMAKE_BUILD_TYPE, so cmake configures it with no -O flag at
+          # all (every other one falls back to Release on its own)
+          sed -i '' 's|cmake -DCMAKE_INSTALL_PREFIX|cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX|' "$SCRIPT_DIR/build-snappy.sh"
+          grep -q 'CMAKE_BUILD_TYPE=Release' "$SCRIPT_DIR/build-snappy.sh"
+
+          # harfbuzz declares buildtype=debugoptimized (-O2, asserts live) and
+          # libbluray debugoptimized with optimization=3; meson's release type
+          # gives -O3 and, via their b_ndebug=if-release, NDEBUG. libvmaf and
+          # dav1d already ask for release themselves
+          sed -i '' 's|meson build --prefix|meson build --buildtype release --prefix|' "$SCRIPT_DIR/build-harfbuzz.sh"
+          grep -q 'buildtype release' "$SCRIPT_DIR/build-harfbuzz.sh"
+          sed -i '' 's|meson setup --prefix|meson setup --buildtype release --prefix|' "$SCRIPT_DIR/build-libbluray.sh"
+          grep -q 'buildtype release' "$SCRIPT_DIR/build-libbluray.sh"
+
+          # libvpx and aom build sample apps, command line tools and docs by
+          # default; ffmpeg links the libraries only
+          sed -i '' 's|--disable-unit-tests|--disable-unit-tests --disable-examples --disable-tools --disable-docs|' "$SCRIPT_DIR/build-vpx.sh"
+          grep -q 'disable-examples' "$SCRIPT_DIR/build-vpx.sh"
+          sed -i '' 's|-DENABLE_TESTS=0|-DENABLE_TESTS=0 -DENABLE_EXAMPLES=0 -DENABLE_TOOLS=0 -DENABLE_DOCS=0|' "$SCRIPT_DIR/build-aom.sh"
+          grep -q 'ENABLE_EXAMPLES=0' "$SCRIPT_DIR/build-aom.sh"
+
       - name: Build
         env:
           FFMPEG_TARBALL: ${{ runner.temp }}/ffmpeg.tar.bz2
+          # ffmpeg already compiles at -O3; these are what the build script
+          # leaves on the table.
+          #   --enable-hardcoded-tables tables baked into the binary instead of
+          #                             being computed on every start
+          #   --disable-debug           drops -g; binaries are stripped on
+          #                             install anyway, so this only saves
+          #                             compile time and disk
+          #   --disable-doc             man/html/txt pages are not shipped
+          #   --cpu=$CPU_BASELINE       oldest Mac the release must run on; see
+          #                             the job env. Anything above apple-m1
+          #                             makes the binaries refuse to start on
+          #                             the Macs below it.
+          #   --enable-opencl           GPU compute filters. Pairs with
+          #                             videotoolbox to give HAVE_OPENCL_VIDEO-
+          #                             TOOLBOX, the IOSurface interop that lets
+          #                             hardware-decoded frames reach a GPU
+          #                             filter without a round trip through
+          #                             system memory.
+          #
+          # Raising the baseline is close to free of benefit: clang very rarely
+          # emits i8mm or bf16 from ordinary C, so it mostly swaps the
+          # scheduling model. Those extensions are already used on the Macs that
+          # have them, through ffmpeg's runtime-dispatched hand-written
+          # assembly, which needs no baseline bump at all.
+          #
+          # Nothing else here moves the needle. Thin LTO and profile-guided
+          # optimization were both built and benchmarked against this tree and
+          # came out inside the noise on decode, scale, encode AND on plain C
+          # filters measured at 0.1-0.4% precision -- including the very filter
+          # the profile was trained on. Practically all the speed on Apple
+          # Silicon is hand-written NEON selected at run time, which no codegen
+          # flag can improve.
+          #
+          # Deliberately NOT used, despite being the obvious "make it faster"
+          # knobs: --disable-safe-bitstream-reader removes buffer bounds checks
+          # in the bitstream reader, and -fno-stack-protector removes the
+          # canaries. Both buy a little speed by weakening a binary whose whole
+          # job is parsing untrusted media.
+          FFMPEG_EXTRA_CONFIGURE: >-
+            --enable-hardcoded-tables --disable-debug --disable-doc
+            --cpu=${{ inputs.cpu_baseline }} --enable-opencl
         run: |
           mkdir "$RUNNER_TEMP/compile"
           cd "$RUNNER_TEMP/compile"
           "$RUNNER_TEMP/build-script/build.sh" -SKIP_BUNDLE=YES
+
+      - name: Validate SIMD against the C reference (checkasm)
+        run: |
+          C="$RUNNER_TEMP/compile"
+          # On Apple Silicon essentially all of the speed is hand-written NEON
+          # picked at runtime, so the thing worth guarding is that those paths
+          # exist and are correct. checkasm runs every SIMD kernel against its
+          # C reference on this CPU and is the strongest cheap correctness
+          # check available without downloading the FATE sample set.
+          cd "$C/source/ffmpeg/ffmpeg"
+          make -j"$(sysctl -n hw.ncpu)" checkasm > "$C/log/checkasm-build.log" 2>&1
+          ./tests/checkasm/checkasm | tee "$C/log/checkasm.log"
+          grep -q 'all .* tests passed' "$C/log/checkasm.log"
+
+          # checkasm can only exercise what this runner's CPU happens to
+          # implement -- an M1 runner has no I8MM, so those kernels go untested
+          # even though they are compiled in and will run on the user's Mac.
+          # What must be verified is therefore what got *compiled*, which is
+          # independent of the build CPU and readable from the configure
+          # summary. This is the guard that keeps a weaker build machine from
+          # quietly producing a binary that underuses a stronger target.
+          LOG="$C/log/build-ffmpeg.log"
+          for ext in NEON DOTPROD I8MM SVE SVE2; do
+            grep -qE "^${ext} enabled +yes" "$LOG" \
+              || { echo "::error::$ext optimizations are not enabled in this build"; exit 1; }
+          done
+          grep -E "enabled +(yes|no)" "$LOG" | head -30
+
+          # Same principle for x265: confirm it built for run-time dispatch
+          # rather than probing the runner's CPU at configure time.
+          grep -q "Configuring build for run-time CPU feature detection" "$C/log/build-x265.log" \
+            || { echo "::error::x265 was not configured for run-time CPU detection;"; \
+                 echo "::error::its SIMD would be limited to what this runner supports"; exit 1; }
 
       - name: Print logs on failure
         if: failure()
@@ -158,25 +372,136 @@ jobs:
           "$BIN/ffmpeg" -version
           "$BIN/ffprobe" -version
           "$BIN/ffplay" -version
+          # surfaces the configure line, so a lost optimization flag is visible
+          # in the log rather than only in a benchmark
+          "$BIN/ffmpeg" -hide_banner -buildconf
+          CONF=$("$BIN/ffmpeg" -hide_banner -buildconf)
+          grep -q -- '--enable-hardcoded-tables' <<< "$CONF"
+          grep -q -- "--cpu=$CPU_BASELINE" <<< "$CONF"
+          grep -q -- '--enable-opencl' <<< "$CONF"
+
+          # The speed on Apple Silicon comes from the runtime-dispatched arm64
+          # asm and the VideoToolbox paths, not from codegen flags, so guard
+          # those instead: a silently lost hardware path costs far more than
+          # any compiler option measured here.
+          #
+          # These check that the code is *present in the binary*, never that it
+          # runs here. The runner is a VM with no video engine, so exercising
+          # hevc_videotoolbox on it would fail even though it works fine on a
+          # real Mac. Presence is the correct and only safe thing to assert.
+          for enc in h264_videotoolbox hevc_videotoolbox prores_videotoolbox; do
+            "$BIN/ffmpeg" -hide_banner -loglevel quiet -encoders | grep -q " $enc " \
+              || { echo "::error::$enc missing from the build"; exit 1; }
+          done
+          "$BIN/ffmpeg" -hide_banner -loglevel quiet -hwaccels | grep -q videotoolbox \
+            || { echo "::error::videotoolbox hwaccel missing"; exit 1; }
+          # hardware scale, rotate and deinterlace. yadif_videotoolbox is
+          # Metal-backed; the toolchain for it is guaranteed by the Xcode
+          # selection step, so demand it unconditionally rather than letting a
+          # thin build image quietly drop it from the release.
+          for f in scale_vt transpose_vt yadif_videotoolbox; do
+            "$BIN/ffmpeg" -hide_banner -loglevel quiet -filters | grep -q " $f " \
+              || { echo "::error::$f filter missing from the build"; exit 1; }
+          done
+          # GPU compute filters, and the IOSurface interop that keeps
+          # hardware-decoded frames on the GPU when they feed one
+          N=$("$BIN/ffmpeg" -hide_banner -loglevel quiet -filters | grep -c "_opencl" || true)
+          [ "$N" -ge 15 ] \
+            || { echo "::error::only $N OpenCL filters built; expected the full set"; exit 1; }
+          grep -q '^HAVE_OPENCL_VIDEOTOOLBOX=yes' \
+            "$RUNNER_TEMP/compile/source/ffmpeg/ffmpeg/ffbuild/config.mak" \
+            || { echo "::error::OpenCL/VideoToolbox IOSurface interop was not detected"; exit 1; }
+
           mkdir "$RUNNER_TEMP/dist"
           for b in ffmpeg ffprobe ffplay; do
             cp "$BIN/$b" "$RUNNER_TEMP/dist/$b-$VERSION-macos-arm64"
           done
+
+          # ffmpeg already strips on install (--enable-stripping is the
+          # default), and on a release build this is a no-op. Doing it here
+          # anyway is idempotent and makes the property hold no matter what
+          # the build script or a future stripping default does.
+          cd "$RUNNER_TEMP/dist"
+          for b in ffmpeg ffprobe ffplay; do
+            strip -x "$b-$VERSION-macos-arm64"
+          done
+          # STABS debug entries must be gone; a build with -g left in shows
+          # hundreds here
+          for b in ffmpeg ffprobe ffplay; do
+            n=$(nm -pa "$b-$VERSION-macos-arm64" 2>/dev/null | awk '$2=="-"' | wc -l)
+            if [ "$n" -gt 1 ]; then
+              echo "::error::$b still carries $n debug symbol entries"; exit 1
+            fi
+          done
+          ls -l
           cd "$RUNNER_TEMP/dist"
           tar -czf "ffmpeg-$VERSION-macos-arm64.tar.gz" ./*-macos-arm64
           shasum -a 256 ./* > SHA256SUMS.txt
 
       - name: Create release
         run: |
+          # apple-m1 -> M1, apple-m4 -> M4
+          MIN_MAC=$(printf '%s' "${CPU_BASELINE#apple-}" | tr '[:lower:]' '[:upper:]')
           {
-            echo "Static FFmpeg, FFprobe and FFplay binaries for macOS on Apple Silicon (arm64),"
+            echo "Static FFmpeg, FFprobe and FFplay binaries for macOS on Apple Silicon,"
             echo "built from tag \`$TAG\` with [martin-riedl.de build-script](https://git.martin-riedl.de/ffmpeg/build-script)."
+            echo "Run \`ffmpeg -buildconf\` for the full configuration."
+            echo
+            echo "> [!IMPORTANT]"
+            echo "> **Requires a $MIN_MAC or newer Mac, on macOS 26 or newer.**"
+            echo "> Built with \`--cpu=$CPU_BASELINE\`. On an older Mac these die with"
+            echo "> \`Illegal instruction: 4\` and no explanation; check yours with"
+            echo "> \`sysctl -n machdep.cpu.brand_string\`."
             echo
             echo "The binaries are not code-signed; after downloading run:"
             echo '```'
             echo "xattr -d com.apple.quarantine ffmpeg-$VERSION-macos-arm64"
             echo "chmod +x ffmpeg-$VERSION-macos-arm64"
             echo '```'
+            echo
+            echo "### Getting the most speed out of these"
+            echo
+            echo "The arm64 SIMD paths (NEON, DOTPROD, I8MM, SVE/SVE2) are compiled in and"
+            echo "selected at runtime, so nothing needs enabling for those. The large win that"
+            echo "does need asking for is the hardware video engine:"
+            echo '```'
+            echo "# hardware decode"
+            echo "ffmpeg -hwaccel videotoolbox -i in.mp4 ..."
+            echo "# hardware encode (h264_videotoolbox, hevc_videotoolbox, prores_videotoolbox)"
+            echo "ffmpeg -i in.mp4 -c:v hevc_videotoolbox -q:v 60 out.mp4"
+            echo "# keep frames on the GPU and scale there"
+            echo "ffmpeg -hwaccel videotoolbox -hwaccel_output_format videotoolbox_vld \\"
+            echo "       -i in.mp4 -vf scale_vt=1280:720 -c:v h264_videotoolbox out.mp4"
+            echo '```'
+            echo
+            echo "The media engine handles H.264, HEVC (8- and 10-bit) and ProRes. AV1 hardware"
+            echo "decode is compiled in and lights up on M3 and newer; older Macs fall back"
+            echo "to software (dav1d), which is fast."
+            echo
+            echo "GPU compute filters are also built, including the Metal-backed"
+            echo "\`yadif_videotoolbox\` and 18 OpenCL filters. OpenCL is wired to VideoToolbox"
+            echo "via IOSurface, so decoded frames reach a GPU filter without a trip through"
+            echo "system memory:"
+            echo '```'
+            echo "ffmpeg -init_hw_device opencl=ocl -filter_hw_device ocl -i in.mp4 \\"
+            echo "       -vf hwupload,unsharp_opencl,hwdownload,format=yuv420p out.mp4"
+            echo '```'
+            echo
+            echo "### Build provenance"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| build-script | \`$BUILD_SCRIPT_REV\` |"
+            echo "| cpu baseline | \`$CPU_BASELINE\` |"
+            echo "| runner image | \`$ImageOS\` / macOS deployment target $MACOSX_DEPLOYMENT_TARGET |"
+            echo
+            echo "<details><summary>Dependency versions</summary>"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/build-script-versions.txt"
+            echo '```'
+            echo
+            echo "</details>"
           } > "$RUNNER_TEMP/notes.md"
           # release is tagged X.Y.Z (no n prefix); that tag doesn't exist yet,
           # so pin it to the commit of the source tag we built
