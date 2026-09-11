@@ -7922,7 +7922,12 @@ static int mov_create_timecode_track(AVFormatContext *s, int index, int src_inde
         return AVERROR(ENOMEM);
     *track->src_track = src_index;
     track->nb_src_track = 1;
-    track->timescale = mov->tracks[src_index].timescale;
+    if (tc.flags & AV_TIMECODE_FLAG_DROPFRAME)
+        track->timescale = tc.fps * 1000;
+    else if (tc.rate.den == 1001)
+        track->timescale = tc.rate.num;
+    else
+        track->timescale = tc.fps;
     if (tc.flags & AV_TIMECODE_FLAG_DROPFRAME)
         track->timecode_flags |= MOV_TIMECODE_FLAG_DROPFRAME;
 
