@@ -16,11 +16,15 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-double fmin(double, double);
-double fmax(double, double);
-float fminf(float, float);
-float fmaxf(float, float);
-long double fmodl(long double, long double);
-long double scalbnl(long double, int);
-long double copysignl(long double, long double);
-float exp2f(float);
+#ifndef COMPAT_ANDROID_MATH_H
+#define COMPAT_ANDROID_MATH_H
+
+#include <math.h>
+#include <android/api-level.h>
+
+#if __ANDROID_API__ < 18
+#define log2(x)  (log(x) * M_LOG2E)
+#define log2f(x) (logf(x) * (float)M_LOG2E)
+#endif
+
+#endif /* COMPAT_ANDROID_MATH_H */
