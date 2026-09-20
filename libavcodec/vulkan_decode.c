@@ -797,6 +797,12 @@ static VkResult vulkan_setup_profile(AVCodecContext *avctx,
     profile->lumaBitDepth        = ff_vk_depth_from_av_depth(desc->comp[0].depth);
     profile->chromaBitDepth      = profile->lumaBitDepth;
 
+    /* A pixel format without a video profile representation is not a valid
+     * profile to query the capabilities for */
+    if (profile->chromaSubsampling == VK_VIDEO_CHROMA_SUBSAMPLING_INVALID_KHR ||
+        profile->lumaBitDepth == VK_VIDEO_COMPONENT_BIT_DEPTH_INVALID_KHR)
+        return VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR;
+
     profile_list->sType        = VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR;
     profile_list->profileCount = 1;
     profile_list->pProfiles    = profile;
@@ -901,7 +907,8 @@ static int vulkan_decode_get_profile(AVCodecContext *avctx, AVBufferRef *frames_
                                    cur_profile);
     }
 
-    if (ret == VK_ERROR_VIDEO_PROFILE_OPERATION_NOT_SUPPORTED_KHR) {
+    if (ret == VK_ERROR_VIDEO_PROFILE_OPERATION_NOT_SUPPORTED_KHR ||
+        ret == VK_ERROR_VIDEO_PROFILE_CODEC_NOT_SUPPORTED_KHR) {
         av_log(avctx, AV_LOG_VERBOSE, "Unable to initialize video session: "
                "%s profile \"%s\" not supported!\n",
                avcodec_get_name(avctx->codec_id),
