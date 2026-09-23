@@ -2281,11 +2281,6 @@ THREADS_LIST="
     w32threads
 "
 
-ATOMICS_LIST="
-    atomics_win32
-    atomics_os2
-"
-
 AUTODETECT_LIBS="
     $EXTERNAL_AUTODETECT_LIBRARY_LIST
     $HWACCEL_AUTODETECT_LIBRARY_LIST
@@ -2430,7 +2425,6 @@ ARCH_FEATURES="
 "
 
 BUILTIN_LIST="
-    MemoryBarrier
     mm_empty
     rdtsc
     sem_timedwait
@@ -3018,9 +3012,7 @@ valgrind_backtrace_conflict="optimizations"
 valgrind_backtrace_deps="valgrind_valgrind_h"
 
 # threading support
-atomics_win32_if="MemoryBarrier"
-atomics_os2_if="stdatomic"
-atomics_native_if_any="$ATOMICS_LIST"
+atomics_native_if_any="stdatomic atomics_win32"
 w32threads_deps="atomics_native"
 os2threads_deps="atomics_native"
 threads_if_any="$THREADS_LIST"
@@ -3174,7 +3166,7 @@ h263_encoder_select="h263dsp mpegvideoenc"
 h263i_decoder_select="h263_decoder"
 h263p_decoder_select="h263_decoder"
 h263p_encoder_select="h263_encoder"
-h264_decoder_select="cabac golomb h264chroma h264dsp h264parse h264pred h264qpel h264_sei videodsp"
+h264_decoder_select="bswapdsp cabac golomb h264chroma h264dsp h264parse h264pred h264qpel h264_sei videodsp"
 h264_decoder_suggest="error_resilience"
 hap_decoder_select="snappy texturedsp"
 hap_encoder_deps="libsnappy"
@@ -3322,7 +3314,7 @@ vp6f_decoder_select="vp6_decoder"
 vp7_decoder_select="h264pred videodsp vp8dsp"
 vp8_decoder_select="h264pred videodsp vp8dsp"
 vp9_decoder_select="videodsp vp9_parser cbs_vp9 vp9_superframe_split_bsf"
-vvc_decoder_select="cabac cbs_h266 golomb videodsp vvc_sei"
+vvc_decoder_select="bswapdsp cabac cbs_h266 golomb videodsp vvc_sei"
 wcmv_decoder_select="inflate_wrapper"
 webp_decoder_select="vp8_decoder"
 webp_anim_decoder_select="vp8_decoder"
@@ -4088,7 +4080,7 @@ schannel_conflict="openssl gnutls libtls mbedtls"
 sctp_protocol_deps="struct_sctp_event_subscribe struct_msghdr_msg_flags"
 sctp_protocol_select="network"
 securetransport_conflict="openssl gnutls libtls mbedtls"
-shared_protocol_deps_any="stdatomic atomics_native"
+shared_protocol_deps="atomics_native"
 srtp_protocol_select="rtp_protocol srtp"
 tcp_protocol_select="network"
 tls_protocol_deps_any="gnutls openssl schannel securetransport libtls mbedtls"
@@ -6825,7 +6817,7 @@ if ! disabled network; then
     fi
 fi
 
-check_builtin MemoryBarrier windows.h "MemoryBarrier()"
+check_builtin atomics_win32 intrin.h "long v = 0; _InterlockedOr(&v, 0)"
 check_builtin gmtime_r time.h "time_t *time; struct tm *tm; gmtime_r(time, tm)"
 check_builtin localtime_r time.h "time_t *time; struct tm *tm; localtime_r(time, tm)"
 check_builtin int128 "" "volatile __int128 i128var = 1; i128var /= 100;"
@@ -8104,8 +8096,6 @@ check_deps $CONFIG_LIST       \
            $CONFIG_EXTRA      \
            $HAVE_LIST         \
            $ALL_COMPONENTS    \
-
-enabled threads && ! enabled pthreads && ! enabled atomics_native && die "non pthread threading without atomics not supported, try adding --enable-pthreads or --cpu=i486 or higher if you are on x86"
 
 enabled threads || warn \
     "Threading support was disabled or is not available on the target platform." \
