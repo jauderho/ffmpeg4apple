@@ -201,6 +201,17 @@ jobs:
           sed -i '' 's|^\./configure |sed -i.orig "s/-force_cpusubtype_ALL//g" configure \&\& ./configure |' "$LV"
           grep -q 'force_cpusubtype_ALL' "$LV"
 
+          # zvbi's SourceForge download URL sometimes answers CI with an HTML
+          # interstitial instead of the tarball ("not a bzip2 file"). Debian's
+          # pool carries the byte-identical orig tarball; fetch that and verify
+          # the checksum, so a bad download fails here instead of at bunzip2.
+          ZV="$RUNNER_TEMP/build-script/script/build-zvbi.sh"
+          sed -i '' 's|^download https://sourceforge.net/projects/zapping/files/zvbi/$VERSION/zvbi-$VERSION.tar.bz2/download "zvbi.tar.bz2"|download https://deb.debian.org/debian/pool/main/z/zvbi/zvbi_$VERSION.orig.tar.bz2 "zvbi.tar.bz2" \&\& echo "fc883c34111a487c4a783f91b1b2bb5610d8d8e58dcba80c7ab31e67e4765318  zvbi.tar.bz2" \| shasum -a 256 -c -|' "$ZV"
+          grep -q 'deb.debian.org' "$ZV"
+          grep -q 'shasum -a 256 -c' "$ZV"
+          # the checksum is for 0.2.35; stop if the build script moves the version
+          [ "$(cat "$RUNNER_TEMP/build-script/version/zvbi")" = "0.2.35" ]
+
           # libbluray's internal dec_init collides with the same symbol in
           # ffmpeg's fftools when linking statically; merge the archive and
           # demote the clashing symbol to a private extern (an export-only
