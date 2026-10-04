@@ -356,7 +356,8 @@ jobs:
           # check available without downloading the FATE sample set.
           cd "$C/source/ffmpeg/ffmpeg"
           make -j"$(sysctl -n hw.ncpu)" checkasm > "$C/log/checkasm-build.log" 2>&1
-          ./tests/checkasm/checkasm | tee "$C/log/checkasm.log"
+          # the pass/fail summary goes to stderr; without 2>&1 tee never sees it
+          ./tests/checkasm/checkasm 2>&1 | tee "$C/log/checkasm.log"
           grep -q 'all .* tests passed' "$C/log/checkasm.log"
 
           # checkasm can only exercise what this runner's CPU happens to
