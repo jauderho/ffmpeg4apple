@@ -543,4 +543,14 @@ jobs:
             --target "$(git rev-parse HEAD)" \
             --title "FFmpeg $VERSION (macOS Apple Silicon)" \
             --notes-file "$RUNNER_TEMP/notes.md" \
+            --latest=false \
             "$RUNNER_TEMP"/dist/*
+
+          # "Latest" is the highest version, not the most recently published:
+          # builds finish in any order, so an older tag can land after a newer
+          # one. Pick the highest non-prerelease, non-rc release and mark that.
+          HIGHEST=$(gh release list --limit 200 --json tagName,isPrerelease,isDraft \
+            --jq '.[] | select(.isPrerelease | not) | select(.isDraft | not) | .tagName' \
+            | grep -Eiv 'rc|alpha|beta' | sort -V | tail -n 1)
+          echo "highest release: $HIGHEST"
+          gh release edit "$HIGHEST" --latest
