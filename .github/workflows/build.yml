@@ -539,6 +539,10 @@ jobs:
           } > "$RUNNER_TEMP/notes.md"
           # release is tagged X.Y.Z (no n prefix); that tag doesn't exist yet,
           # so pin it to the commit of the source tag we built
+          # Compatible with immutable releases: gh creates a draft, uploads the
+          # assets and only then publishes, and immutability applies from the
+          # publish on. A published release (and its tag) can no longer be
+          # deleted and rebuilt, so a bad build needs a new version.
           gh release create "$VERSION" \
             --target "$(git rev-parse HEAD)" \
             --title "FFmpeg $VERSION (macOS Apple Silicon)" \

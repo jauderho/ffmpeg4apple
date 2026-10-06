@@ -92,6 +92,28 @@ jobs:
             gh workflow run build.yml --ref "$GITHUB_REF_NAME" -f tag="$TAG"
           done
 
+      - name: Mark the highest non-rc release as latest
+        run: |
+          # build.yml does this when it publishes, but builds finish in any
+          # order and a run can be skipped or fail after publishing, so settle
+          # it here as well: every sync leaves "Latest" on the highest version
+          # (not the most recently published), ignoring drafts, prereleases
+          # and rc/alpha/beta tags.
+          HIGHEST=$(gh release list --limit 200 --json tagName,isPrerelease,isDraft \
+            --jq '.[] | select(.isPrerelease | not) | select(.isDraft | not) | .tagName' \
+            | grep -Eiv 'rc|alpha|beta' | sort -V | tail -n 1)
+          if [[ -z "$HIGHEST" ]]; then
+            echo "no releases yet"
+            exit 0
+          fi
+          CURRENT=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          if [[ "$CURRENT" == "$HIGHEST" ]]; then
+            echo "$HIGHEST is already latest"
+          else
+            echo "latest is '$CURRENT'; moving it to $HIGHEST"
+            gh release edit "$HIGHEST" --latest
+          fi
+
       - name: Push master
         run: |
           # master may have moved while this job ran (e.g. PR merges);
