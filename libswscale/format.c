@@ -980,6 +980,10 @@ static int fmt_analyze(enum AVPixelFormat fmt, SwsReadWriteOp *rw_op,
     if (desc->log2_chroma_w || desc->log2_chroma_h)
         return AVERROR(ENOTSUP);
 
+    /* XYZ decoding requires TRC support, which is not implemented yet */
+    if (desc->flags & AV_PIX_FMT_FLAG_XYZ)
+        return AVERROR(ENOTSUP);
+
     /* No support for semi-planar formats at the moment */
     if (desc->flags & AV_PIX_FMT_FLAG_PLANAR &&
         av_pix_fmt_count_planes(fmt) < desc->nb_components)
@@ -1516,9 +1520,6 @@ static int decode_colors(SwsContext *ctx, SwsPixelType type, SwsOpList *ops,
         .lin  = fmt_decode_range(fmt, type, incomplete),
     }));
 
-    if (fmt->desc->flags & AV_PIX_FMT_FLAG_XYZ)
-        return 0; /* XYZ formats are treated as colorspaceless */
-
     /* Final step, decode colorspace */
     switch (fmt->csp) {
     case AVCOL_SPC_RGB:
@@ -1591,8 +1592,7 @@ static int encode_colors(SwsContext *ctx, SwsPixelType type, SwsOpList *ops,
     if (!pixel_type)
          return AVERROR(ENOTSUP);
 
-    /* See ff_sws_decode_colors(): XYZ formats have no colorspace matrix */
-    switch (dst->desc->flags & AV_PIX_FMT_FLAG_XYZ ? AVCOL_SPC_RGB : dst->csp) {
+    switch (dst->csp) {
     case AVCOL_SPC_RGB:
         break;
     case AVCOL_SPC_UNSPECIFIED:
@@ -1832,11 +1832,6 @@ int ff_sws_op_list_generate(SwsContext *ctx, const SwsFormat *src,
     /* The new code does not yet support alpha blending */
     if (src->desc->flags & AV_PIX_FMT_FLAG_ALPHA &&
         ctx->alpha_blend != SWS_ALPHA_BLEND_NONE)
-        return AVERROR(ENOTSUP);
-
-    /* XYZ<->RGB conversion requires application of a gamma function which
-     * are not currently implemented */
-    if ((src->desc->flags ^ dst->desc->flags) & AV_PIX_FMT_FLAG_XYZ)
         return AVERROR(ENOTSUP);
 
     SwsOpList *ops = ff_sws_op_list_alloc();
