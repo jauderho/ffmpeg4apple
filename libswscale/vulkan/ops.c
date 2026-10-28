@@ -179,7 +179,7 @@ error:
            av_err2str(err));
 }
 
-static void free_fn(void *priv)
+static void spirv_free(void *priv)
 {
     VulkanPriv *p = priv;
     ff_vk_exec_pool_free(&p->s->vkctx, &p->e);
@@ -787,7 +787,8 @@ static int get_view_fmts(VkFormat view_fmts[AV_NUM_DATA_POINTERS],
     if (!vk_fmts)
         return AVERROR(ENOTSUP);
 
-    for (int i = 0; i < av_pix_fmt_count_planes(fmt); i++) {
+    const int nb_planes = av_pix_fmt_count_planes(fmt);
+    for (int i = 0; i < nb_planes; i++) {
         view_fmts[i] = word_fmt ? word_fmt : ff_vk_map_fmt_to_rep(vk_fmts[i], rep);
         if (view_fmts[i] == VK_FORMAT_UNDEFINED)
             return AVERROR(ENOTSUP);
@@ -800,8 +801,9 @@ static int get_view_fmts(VkFormat view_fmts[AV_NUM_DATA_POINTERS],
  * have to cover the highest plane referenced, not just the plane count. */
 static int rw_op_img_count(const SwsOp *op, const uint8_t *planes)
 {
+    const int nb_planes = ff_sws_rw_op_planes(op);
     int count = 0;
-    for (int i = 0; i < ff_sws_rw_op_planes(op); i++)
+    for (int i = 0; i < nb_planes; i++)
         count = FFMAX(count, planes[i] + 1);
     return count;
 }
@@ -1265,8 +1267,8 @@ fail:
     return err;
 }
 
-static int compile_spirv(SwsContext *sws, const SwsOpList *ops,
-                         SwsCompiledOp *out)
+static int compile_ops_spirv(SwsContext *sws, const SwsOpList *ops,
+                             SwsCompiledOp *out)
 {
     SwsUOpList *uops = NULL;
     int err;
@@ -1312,7 +1314,7 @@ static int compile_spirv(SwsContext *sws, const SwsOpList *ops,
         .opaque      = true,
         .func_opaque = spirv_process,
         .priv        = p,
-        .free        = free_fn,
+        .free        = spirv_free,
     };
 
     av_log(sws, AV_LOG_DEBUG, "Compiled micro-ops:\n");
@@ -1327,13 +1329,13 @@ static int compile_spirv(SwsContext *sws, const SwsOpList *ops,
 
 fail:
     ff_sws_uop_list_free(&uops);
-    free_fn(p);
+    spirv_free(p);
     return err;
 }
 
 const SwsOpBackend backend_spirv = {
     .name      = "spirv",
     .flags     = SWS_BACKEND_SPIRV,
-    .compile   = compile_spirv,
+    .compile   = compile_ops_spirv,
     .hw_format = AV_PIX_FMT_VULKAN,
 };
