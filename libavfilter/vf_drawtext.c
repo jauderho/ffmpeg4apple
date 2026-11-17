@@ -1038,7 +1038,7 @@ static av_cold int init(AVFilterContext *ctx)
     };
 
 #if CONFIG_LIBFRIBIDI
-    if (s->text_shaping)
+    if (s->text_shaping && s->text_source != AV_FRAME_DATA_DETECTION_BBOXES)
         if ((err = shape_text(ctx)) < 0)
             return err;
 #endif
@@ -1907,7 +1907,8 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
         }
     }
 
-    if (s->reload && !(inl->frame_count_out % s->reload)) {
+    if (s->reload && s->text_source != AV_FRAME_DATA_DETECTION_BBOXES &&
+        !(inl->frame_count_out % s->reload)) {
         if ((ret = ff_load_textfile(ctx, (const char *)s->textfile, &s->text, NULL)) < 0) {
             av_frame_free(&frame);
             return ret;
@@ -1939,7 +1940,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
                 strcat(s->text, bbox->classify_labels[j]);
             }
             s->x = bbox->x;
-            s->y = bbox->y - s->fontsize;
+            s->y = (int64_t)bbox->y - s->fontsize;
         }
         ret = draw_text(ctx, frame);
         if (ret < 0) {
