@@ -173,9 +173,21 @@ fate-mov-aac-2048-priming-preroll: CMD = run ffprobe$(PROGSSUF)$(EXESUF) -show_e
 FATE_MOV_FFPROBE-$(call DEMDEC, MOV, AAC) += fate-mov-aac-2048-priming-seek-landing
 fate-mov-aac-2048-priming-seek-landing: CMD = run ffprobe$(PROGSSUF)$(EXESUF) -seek_flags preroll -read_intervals 2.3%+\#3 -show_entries packet=pts,dts,duration -print_format compact $(TARGET_SAMPLES)/mov/aac-2048-priming.mov
 
+# HE-AAC whose track clock is the core rate, half the output rate.
+FATE_MOV_FFPROBE-$(call DEMDEC, MOV, AAC) += fate-mov-aac-he-core-rate-priming
+fate-mov-aac-he-core-rate-priming: CMD = run ffprobe$(PROGSSUF)$(EXESUF) -show_entries stream=sample_rate,time_base,initial_padding -print_format compact $(TARGET_SAMPLES)/audiomatch/tones_fdkaac_44100_stereo_aac_he.m4a
+
+# The edit starts 64 core ticks into the third packet.
+FATE_MOV_FFPROBE-$(call DEMDEC, MOV, AAC) += fate-mov-aac-he-core-rate-mid-packet
+fate-mov-aac-he-core-rate-mid-packet: CMD = run ffprobe$(PROGSSUF)$(EXESUF) -read_intervals %+\#3 -show_entries frame=pts,nb_samples -print_format compact $(TARGET_SAMPLES)/aac/sbr_edit_end.mp4
+
 # Seeking into the stream must not drop samples to the container's priming.
 FATE_MOV-$(call FRAMECRC, MOV, AAC, PCM_S16LE_ENCODER ARESAMPLE_FILTER VOLUME_FILTER) += fate-mov-aac-2048-priming-seek
 fate-mov-aac-2048-priming-seek: CMD = framecrc -ss 2.3 -t 0.15 -i $(TARGET_SAMPLES)/mov/aac-2048-priming.mov -af volume=0,aresample -c:a pcm_s16le
+
+# Dual-rate low-delay SBR ELD: check the output rate independently of edit-list trimming.
+FATE_MOV-$(call DEMMUX, MOV, FRAMECRC, PIPE_PROTOCOL) += fate-mov-aac-eld-dual-rate
+fate-mov-aac-eld-dual-rate: CMD = framecrc -nofind_stream_info -ignore_editlist 1 -i $(TARGET_SAMPLES)/mov/aac-eld-dual-rate.mp4 -c:a copy
 
 fate-mov-zombie: CMD = run ffprobe$(PROGSSUF)$(EXESUF) -show_streams -show_packets -show_frames -bitexact -print_format compact $(TARGET_SAMPLES)/mov/white_zombie_scrunch-part.mov
 
@@ -440,6 +452,12 @@ FATE_MOV_FFMPEG-$(call TRANSCODE, PCM_F32LE, MP4 MOV, WAV_DEMUXER PAN_FILTER) \
                           += fate-mov-mp4-pcm-float
 fate-mov-mp4-pcm-float: tests/data/asynth-44100-1.wav
 fate-mov-mp4-pcm-float: CMD = transcode wav $(TARGET_PATH)/tests/data/asynth-44100-1.wav mp4 "-af aresample,pan=FR+FL+FR|c0=c0|c1=c0|c2=c0 -c:a pcm_f32le" "-map 0 -c copy -frames:a 0"
+
+# Test IMA4 above 65535 Hz, in a version 2 sound description
+FATE_MOV_FFMPEG-$(call REMUX, MOV, ADPCM_IMA_QT_ENCODER WAV_DEMUXER PCM_S16LE_DECODER ARESAMPLE_FILTER) \
+                          += fate-mov-ima4-96k
+fate-mov-ima4-96k: tests/data/asynth-96000-1.wav
+fate-mov-ima4-96k: CMD = transcode wav $(TARGET_PATH)/tests/data/asynth-96000-1.wav mov "-af aresample -t 0.002 -c:a adpcm_ima_qt" "-c copy"
 
 fate-mov-pcm-remux: tests/data/asynth-44100-1.wav
 fate-mov-pcm-remux: CMD = md5 -i $(TARGET_PATH)/tests/data/asynth-44100-1.wav -map 0 -c copy -fflags +bitexact -f mp4
